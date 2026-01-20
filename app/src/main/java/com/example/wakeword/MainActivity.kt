@@ -115,12 +115,15 @@ fun WakeWordScreen(
 ) {
     val context = LocalContext.current
     val smoother = remember { ConfidenceSmoother(5) }
+    var consecutiveHits by remember { mutableIntStateOf(0) }
     var isListening by remember { mutableStateOf(false) }
     var mfccValues by remember { mutableStateOf<FloatArray?>(null) }
     var detectionStatus by remember { mutableStateOf("Ready") }
     var confidenceScore by remember { mutableFloatStateOf(0f) }
     var lastDetectionTime by remember { mutableLongStateOf(0L) }
     val cooldownMs = 2000L
+    val REQUIRED_HITS = 3
+    val THRESHOLD = 0.45f
 
     Column(
         modifier = modifier
@@ -201,19 +204,27 @@ fun WakeWordScreen(
                             mfccValues = mfcc
 
                             val rawConfidence = modelInterpreter.predict(mfcc)
-                            val smoothedConfidence = smoother.add(rawConfidence)
-                            confidenceScore = smoothedConfidence
+                            val confidence = smoother.add(rawConfidence)
+                            confidenceScore = confidence
 
-                            Log.d("WakeWordConfidence", "raw=$rawConfidence smooth=$smoothedConfidence")
+                            Log.d("WakeWordConfidence", "raw=$rawConfidence smooth=$confidence hits=$consecutiveHits")
 
-                            val THRESHOLD = 0.45f
                             val currentTime = System.currentTimeMillis()
 
-                            if (smoothedConfidence > THRESHOLD && (currentTime - lastDetectionTime) > cooldownMs) {
-                                detectionStatus = "HEY NIRMAN DETECTED!"
+                            if (confidence > THRESHOLD) {
+                                consecutiveHits++
+                            } else {
+                                consecutiveHits = 0
+                            }
+
+                            if (consecutiveHits >= REQUIRED_HITS && (currentTime - lastDetectionTime) > cooldownMs) {
                                 lastDetectionTime = currentTime
-                                Log.d("WakeWord", "Detected with smoothed confidence: $smoothedConfidence (raw: $rawConfidence)")
-                            } else if (smoothedConfidence <= THRESHOLD) {
+                                consecutiveHits = 0
+                                smoother.reset()
+
+                                detectionStatus = "HEY NIRMAN DETECTED!"
+                                Log.d("WakeWord", "Detected with smoothed confidence: $confidence (raw: $rawConfidence)")
+                            } else if (confidence <= THRESHOLD) {
                                 detectionStatus = "Listening..."
                             }
                         }

@@ -20,9 +20,11 @@ class WakeWordService : Service() {
     private val audioProcessor = AudioProcessor()
     private lateinit var modelInterpreter: ModelInterpreter
     private val smoother = ConfidenceSmoother(5)
+    private var consecutiveHits = 0
     private var lastDetectionTime = 0L
     private val cooldownMs = 2000L
-    private val threshold = 0.45f
+    private val REQUIRED_HITS = 3
+    private val THRESHOLD = 0.45f
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -84,12 +86,21 @@ class WakeWordService : Service() {
             val raw = modelInterpreter.predict(mfcc)
             val confidence = smoother.add(raw)
 
-            Log.d("WakeWordConfidence", "Service: raw=$raw smooth=$confidence")
+            Log.d("WakeWordConfidence", "Service: raw=$raw smooth=$confidence hits=$consecutiveHits")
 
             val currentTime = System.currentTimeMillis()
 
-            if (confidence > threshold && (currentTime - lastDetectionTime) > cooldownMs) {
+            if (confidence > THRESHOLD) {
+                consecutiveHits++
+            } else {
+                consecutiveHits = 0
+            }
+
+            if (consecutiveHits >= REQUIRED_HITS && (currentTime - lastDetectionTime) > cooldownMs) {
                 lastDetectionTime = currentTime
+                consecutiveHits = 0
+                smoother.reset()
+
                 Log.d("WakeWordService", "Wake word detected! Smoothed: $confidence (raw: $raw)")
                 onWakeWordDetected(confidence)
             }
