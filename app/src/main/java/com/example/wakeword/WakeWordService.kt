@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import com.example.wakeword.audio.AudioProcessor
+import com.example.wakeword.audio.ConfidenceSmoother
 import com.example.wakeword.ml.ModelInterpreter
 import kotlinx.coroutines.*
 
@@ -18,9 +19,10 @@ class WakeWordService : Service() {
 
     private val audioProcessor = AudioProcessor()
     private lateinit var modelInterpreter: ModelInterpreter
+    private val smoother = ConfidenceSmoother(5)
     private var lastDetectionTime = 0L
     private val cooldownMs = 2000L
-    private val threshold = 0.6f
+    private val threshold = 0.45f
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -79,12 +81,16 @@ class WakeWordService : Service() {
         startForeground(NOTIFICATION_ID, notification)
 
         audioProcessor.startRecording { mfcc ->
-            val confidence = modelInterpreter.predict(mfcc)
+            val raw = modelInterpreter.predict(mfcc)
+            val confidence = smoother.add(raw)
+
+            Log.d("WakeWordConfidence", "Service: raw=$raw smooth=$confidence")
+
             val currentTime = System.currentTimeMillis()
 
             if (confidence > threshold && (currentTime - lastDetectionTime) > cooldownMs) {
                 lastDetectionTime = currentTime
-                Log.d("WakeWordService", "Wake word detected! Confidence: $confidence")
+                Log.d("WakeWordService", "Wake word detected! Smoothed: $confidence (raw: $raw)")
                 onWakeWordDetected(confidence)
             }
         }

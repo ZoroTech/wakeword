@@ -27,8 +27,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.wakeword.audio.AudioProcessor
+import com.example.wakeword.audio.ConfidenceSmoother
 import com.example.wakeword.ui.theme.WakewordTheme
-// Import your model interpreter (ensure the package name matches your file)
 import com.example.wakeword.ml.ModelInterpreter
 
 class MainActivity : ComponentActivity() {
@@ -114,6 +114,7 @@ fun WakeWordScreen(
     onStopService: () -> Unit
 ) {
     val context = LocalContext.current
+    val smoother = remember { ConfidenceSmoother(5) }
     var isListening by remember { mutableStateOf(false) }
     var mfccValues by remember { mutableStateOf<FloatArray?>(null) }
     var detectionStatus by remember { mutableStateOf("Ready") }
@@ -199,17 +200,20 @@ fun WakeWordScreen(
                         audioProcessor.startRecording { mfcc ->
                             mfccValues = mfcc
 
-                            val confidence = modelInterpreter.predict(mfcc)
-                            confidenceScore = confidence
+                            val rawConfidence = modelInterpreter.predict(mfcc)
+                            val smoothedConfidence = smoother.add(rawConfidence)
+                            confidenceScore = smoothedConfidence
 
-                            val THRESHOLD = 0.6f
+                            Log.d("WakeWordConfidence", "raw=$rawConfidence smooth=$smoothedConfidence")
+
+                            val THRESHOLD = 0.45f
                             val currentTime = System.currentTimeMillis()
 
-                            if (confidence > THRESHOLD && (currentTime - lastDetectionTime) > cooldownMs) {
+                            if (smoothedConfidence > THRESHOLD && (currentTime - lastDetectionTime) > cooldownMs) {
                                 detectionStatus = "HEY NIRMAN DETECTED!"
                                 lastDetectionTime = currentTime
-                                Log.d("WakeWord", "Detected with confidence: $confidence")
-                            } else if (confidence <= THRESHOLD) {
+                                Log.d("WakeWord", "Detected with smoothed confidence: $smoothedConfidence (raw: $rawConfidence)")
+                            } else if (smoothedConfidence <= THRESHOLD) {
                                 detectionStatus = "Listening..."
                             }
                         }
