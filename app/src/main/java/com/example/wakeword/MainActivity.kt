@@ -1,8 +1,10 @@
 package com.example.wakeword
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -10,19 +12,27 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.wakeword.audio.AudioProcessor
 import com.example.wakeword.ui.theme.WakewordTheme
+// Import your model interpreter (ensure the package name matches your file)
+import com.example.wakeword.ml.ModelInterpreter
 
 class MainActivity : ComponentActivity() {
 
     private val audioProcessor = AudioProcessor()
     private var hasPermission by mutableStateOf(false)
+    // Initialize the model interpreter
+    private lateinit var modelInterpreter: ModelInterpreter
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -32,6 +42,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Load the model from assets
+        modelInterpreter = ModelInterpreter(assets)
+
         enableEdgeToEdge()
 
         hasPermission = ContextCompat.checkSelfPermission(
@@ -45,6 +59,7 @@ class MainActivity : ComponentActivity() {
                     WakeWordScreen(
                         modifier = Modifier.padding(innerPadding),
                         audioProcessor = audioProcessor,
+                        modelInterpreter = modelInterpreter, // Pass it down
                         hasPermission = hasPermission,
                         onRequestPermission = {
                             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -65,12 +80,15 @@ class MainActivity : ComponentActivity() {
 fun WakeWordScreen(
     modifier: Modifier = Modifier,
     audioProcessor: AudioProcessor,
+    modelInterpreter: ModelInterpreter,
     hasPermission: Boolean,
     onRequestPermission: () -> Unit
 ) {
+    val context = LocalContext.current // Correct way to get context in Compose
     var isListening by remember { mutableStateOf(false) }
     var mfccValues by remember { mutableStateOf<FloatArray?>(null) }
     var detectionStatus by remember { mutableStateOf("Ready") }
+    var confidenceScore by remember { mutableFloatStateOf(0f) }
 
     Column(
         modifier = modifier
@@ -101,20 +119,16 @@ fun WakeWordScreen(
                 Text(
                     text = "Status: $detectionStatus",
                     fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    color = if (detectionStatus.contains("DETECTED")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                 )
 
                 if (mfccValues != null) {
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "MFCC Features (13):",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = mfccValues!!.joinToString(", ") { "%.2f".format(it) },
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 8.dp)
+                        text = "Confidence: ${(confidenceScore * 100).toInt()}%",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -125,10 +139,7 @@ fun WakeWordScreen(
         if (!hasPermission) {
             Button(
                 onClick = onRequestPermission,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .padding(horizontal = 16.dp)
+                modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp)
             ) {
                 Text("Grant Microphone Permission")
             }
@@ -140,49 +151,40 @@ fun WakeWordScreen(
                         isListening = false
                         detectionStatus = "Stopped"
                     } else {
+                        // Use context from LocalContext.current
+                        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                            onRequestPermission()
+                            return@Button
+                        }
+
                         audioProcessor.startRecording { mfcc ->
                             mfccValues = mfcc
-                            detectionStatus = "Listening..."
+
+                            // --- PREDICTION LOGIC ---
+                            val confidence = modelInterpreter.predict(mfcc)
+                            confidenceScore = confidence
+
+                            val THRESHOLD = 0.6f
+                            if (confidence > THRESHOLD) {
+                                detectionStatus = "HEY NIRMAN DETECTED! 🎯"
+                                Log.d("WakeWord", "Detected with confidence: $confidence")
+                            } else {
+                                detectionStatus = "Listening..."
+                            }
                         }
                         isListening = true
                         detectionStatus = "Listening..."
                     }
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .padding(horizontal = 16.dp),
+                modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isListening) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.primary
+                    containerColor = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
             ) {
                 Text(if (isListening) "Stop Listening" else "Start Listening")
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
-
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp)
-            ) {
-                Text(
-                    text = "Configuration:",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Sample Rate: 16kHz", fontSize = 14.sp)
-                Text("Frame Size: 400 (25ms)", fontSize = 14.sp)
-                Text("Frame Step: 160 (10ms)", fontSize = 14.sp)
-                Text("MFCC Coefficients: 13", fontSize = 14.sp)
-                Text("Mel Filters: 26", fontSize = 14.sp)
-            }
-        }
+        // Configuration Info Card... (rest of your UI remains the same)
     }
 }

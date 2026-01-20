@@ -7,7 +7,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 
-class WakeWordDetector(context: Context, modelPath: String) {
+class  WakeWordDetector(context: Context, modelPath: String) {
 
     private var interpreter: Interpreter? = null
     private val threshold = 0.7f

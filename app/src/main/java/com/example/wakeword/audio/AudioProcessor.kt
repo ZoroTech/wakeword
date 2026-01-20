@@ -1,8 +1,10 @@
 package com.example.wakeword.audio
 
+import android.Manifest
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import androidx.annotation.RequiresPermission
 import kotlinx.coroutines.*
 import kotlin.math.abs
 
@@ -20,6 +22,7 @@ class AudioProcessor {
     private val audioBuffer = mutableListOf<Short>()
     private val recordingDurationMs = 1000
 
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startRecording(onMFCCExtracted: (FloatArray) -> Unit) {
         if (isRecording) return
 
@@ -32,29 +35,41 @@ class AudioProcessor {
         )
 
         isRecording = true
+        // We calculate exactly how many samples we need for 1 second (16000 samples)
+        val requiredSamples = sampleRate * recordingDurationMs / 1000
         audioBuffer.clear()
 
         recordingJob = CoroutineScope(Dispatchers.IO).launch {
             audioRecord?.startRecording()
-            val buffer = ShortArray(bufferSize)
+            val tempBuffer = ShortArray(bufferSize)
 
-            while (isRecording) {
-                val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+            while (isRecording && isActive) {
+                val read = audioRecord?.read(tempBuffer, 0, tempBuffer.size) ?: 0
                 if (read > 0) {
                     synchronized(audioBuffer) {
-                        audioBuffer.addAll(buffer.take(read))
+                        // Add only the read elements
+                        for (i in 0 until read) {
+                            audioBuffer.add(tempBuffer[i])
+                        }
 
-                        if (audioBuffer.size >= sampleRate * recordingDurationMs / 1000) {
-                            val audioData = audioBuffer.take(sampleRate * recordingDurationMs / 1000)
+                        // Process once we have enough data
+                        if (audioBuffer.size >= requiredSamples) {
+                            // Take exactly one window of data
+                            val audioData = audioBuffer.take(requiredSamples)
+
+                            // Remove the processed data from the start of the buffer
+                            // Use repeat to clear or just clear all if you don't want sliding windows
                             audioBuffer.clear()
 
                             val floatAudio = FloatArray(audioData.size) { i ->
                                 audioData[i].toFloat() / Short.MAX_VALUE
                             }
 
+                            // Compute MFCC on the background thread
                             val mfcc = MFCC.computeMFCC(floatAudio, sampleRate)
 
-                            withContext(Dispatchers.Main) {
+                            // Dispatch only the result to the main thread
+                            launch(Dispatchers.Main) {
                                 onMFCCExtracted(mfcc)
                             }
                         }
