@@ -1,8 +1,12 @@
 package com.example.wakeword
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -31,8 +35,8 @@ class MainActivity : ComponentActivity() {
 
     private val audioProcessor = AudioProcessor()
     private var hasPermission by mutableStateOf(false)
-    // Initialize the model interpreter
     private lateinit var modelInterpreter: ModelInterpreter
+    private var serviceDetectionMessage by mutableStateOf<String?>(null)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -40,10 +44,17 @@ class MainActivity : ComponentActivity() {
         hasPermission = isGranted
     }
 
+    private val wakeWordReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val confidence = intent?.getFloatExtra("confidence", 0f) ?: 0f
+            serviceDetectionMessage = "Service detected wake word! (${"%.0f".format(confidence * 100)}%)"
+            Log.d("MainActivity", "Received wake word broadcast: $confidence")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Load the model from assets
         modelInterpreter = ModelInterpreter(assets)
 
         enableEdgeToEdge()
@@ -53,16 +64,30 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
+        val filter = IntentFilter("com.example.wakeword.WAKE_WORD_DETECTED")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(wakeWordReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(wakeWordReceiver, filter)
+        }
+
         setContent {
             WakewordTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     WakeWordScreen(
                         modifier = Modifier.padding(innerPadding),
                         audioProcessor = audioProcessor,
-                        modelInterpreter = modelInterpreter, // Pass it down
+                        modelInterpreter = modelInterpreter,
                         hasPermission = hasPermission,
+                        serviceDetectionMessage = serviceDetectionMessage,
                         onRequestPermission = {
                             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        },
+                        onStartService = {
+                            WakeWordService.start(this)
+                        },
+                        onStopService = {
+                            WakeWordService.stop(this)
                         }
                     )
                 }
@@ -73,6 +98,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         audioProcessor.stopRecording()
+        unregisterReceiver(wakeWordReceiver)
     }
 }
 
@@ -82,13 +108,18 @@ fun WakeWordScreen(
     audioProcessor: AudioProcessor,
     modelInterpreter: ModelInterpreter,
     hasPermission: Boolean,
-    onRequestPermission: () -> Unit
+    serviceDetectionMessage: String?,
+    onRequestPermission: () -> Unit,
+    onStartService: () -> Unit,
+    onStopService: () -> Unit
 ) {
-    val context = LocalContext.current // Correct way to get context in Compose
+    val context = LocalContext.current
     var isListening by remember { mutableStateOf(false) }
     var mfccValues by remember { mutableStateOf<FloatArray?>(null) }
     var detectionStatus by remember { mutableStateOf("Ready") }
     var confidenceScore by remember { mutableFloatStateOf(0f) }
+    var lastDetectionTime by remember { mutableLongStateOf(0L) }
+    val cooldownMs = 2000L
 
     Column(
         modifier = modifier
@@ -144,6 +175,15 @@ fun WakeWordScreen(
                 Text("Grant Microphone Permission")
             }
         } else {
+            Text(
+                text = "UI-Based Detection (Testing)",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             Button(
                 onClick = {
                     if (isListening) {
@@ -151,7 +191,6 @@ fun WakeWordScreen(
                         isListening = false
                         detectionStatus = "Stopped"
                     } else {
-                        // Use context from LocalContext.current
                         if (ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                             onRequestPermission()
                             return@Button
@@ -160,15 +199,17 @@ fun WakeWordScreen(
                         audioProcessor.startRecording { mfcc ->
                             mfccValues = mfcc
 
-                            // --- PREDICTION LOGIC ---
                             val confidence = modelInterpreter.predict(mfcc)
                             confidenceScore = confidence
 
                             val THRESHOLD = 0.6f
-                            if (confidence > THRESHOLD) {
-                                detectionStatus = "HEY NIRMAN DETECTED! 🎯"
+                            val currentTime = System.currentTimeMillis()
+
+                            if (confidence > THRESHOLD && (currentTime - lastDetectionTime) > cooldownMs) {
+                                detectionStatus = "HEY NIRMAN DETECTED!"
+                                lastDetectionTime = currentTime
                                 Log.d("WakeWord", "Detected with confidence: $confidence")
-                            } else {
+                            } else if (confidence <= THRESHOLD) {
                                 detectionStatus = "Listening..."
                             }
                         }
@@ -181,10 +222,67 @@ fun WakeWordScreen(
                     containerColor = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
             ) {
-                Text(if (isListening) "Stop Listening" else "Start Listening")
+                Text(if (isListening) "Stop UI Detection" else "Start UI Detection")
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "Background Service (Production)",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (serviceDetectionMessage != null) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                ) {
+                    Text(
+                        text = serviceDetectionMessage,
+                        modifier = Modifier.padding(16.dp),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onStartService,
+                    modifier = Modifier.weight(1f).height(56.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Text("Start Service")
+                }
+
+                Button(
+                    onClick = onStopService,
+                    modifier = Modifier.weight(1f).height(56.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Stop Service")
+                }
             }
         }
-
-        // Configuration Info Card... (rest of your UI remains the same)
     }
 }

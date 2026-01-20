@@ -20,7 +20,8 @@ class AudioProcessor {
     private var isRecording = false
 
     private val audioBuffer = mutableListOf<Short>()
-    private val recordingDurationMs = 1000
+    private val windowSize = 16000
+    private val hopSize = 4000
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startRecording(onMFCCExtracted: (FloatArray) -> Unit) {
@@ -35,8 +36,6 @@ class AudioProcessor {
         )
 
         isRecording = true
-        // We calculate exactly how many samples we need for 1 second (16000 samples)
-        val requiredSamples = sampleRate * recordingDurationMs / 1000
         audioBuffer.clear()
 
         recordingJob = CoroutineScope(Dispatchers.IO).launch {
@@ -47,28 +46,23 @@ class AudioProcessor {
                 val read = audioRecord?.read(tempBuffer, 0, tempBuffer.size) ?: 0
                 if (read > 0) {
                     synchronized(audioBuffer) {
-                        // Add only the read elements
                         for (i in 0 until read) {
                             audioBuffer.add(tempBuffer[i])
                         }
 
-                        // Process once we have enough data
-                        if (audioBuffer.size >= requiredSamples) {
-                            // Take exactly one window of data
-                            val audioData = audioBuffer.take(requiredSamples)
+                        if (audioBuffer.size >= windowSize) {
+                            val audioData = audioBuffer.take(windowSize)
 
-                            // Remove the processed data from the start of the buffer
-                            // Use repeat to clear or just clear all if you don't want sliding windows
+                            val newBuffer = audioBuffer.drop(hopSize)
                             audioBuffer.clear()
+                            audioBuffer.addAll(newBuffer)
 
                             val floatAudio = FloatArray(audioData.size) { i ->
                                 audioData[i].toFloat() / Short.MAX_VALUE
                             }
 
-                            // Compute MFCC on the background thread
                             val mfcc = MFCC.computeMFCC(floatAudio, sampleRate)
 
-                            // Dispatch only the result to the main thread
                             launch(Dispatchers.Main) {
                                 onMFCCExtracted(mfcc)
                             }
